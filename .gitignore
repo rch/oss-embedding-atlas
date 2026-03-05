@@ -3,6 +3,7 @@ __pycache__/
 node_modules/
 .ipynb_checkpoints/
 build/
+thirdparty/
 dist/
 distlib/
 target/
@@ -24,3 +25,14 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml

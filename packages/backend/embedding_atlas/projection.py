@@ -125,8 +125,13 @@ def _project_text_with_litellm(
 
     default_args = {
         "sync": False,
+        "encoding_format": "float",
     }
-    merged_args = {**default_args, **(args or {})}
+    merged_args = {
+        k: v
+        for k, v in {**default_args, **(args or {})}.items()
+        if v is not None
+    }
 
     def run_sync() -> list:
         # Process batches synchronously

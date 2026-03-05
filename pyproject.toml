@@ -1,0 +1,11 @@
+[project]
+name = "embedding-atlas"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "ortools>=9.15.6755",
+    "pyarrow>=23.0.1",
+    "pyhocon>=0.3.61",
+]
