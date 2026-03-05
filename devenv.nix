@@ -78,14 +78,14 @@
     npm run dev -w @embedding-atlas/viewer -- --host 127.0.0.1 --port 5173
   '';
 
-  processes.llama.exec = ''
+  processes.ggml.exec = ''
     set -euo pipefail
 
     BOOTSTRAP_ENABLED=''${ATLAS_BOOTSTRAP_ENABLED:-1}
     BOOTSTRAP_ENV_FILE=''${ATLAS_BOOTSTRAP_ENV_FILE:-build/runtime.generated.env}
     if [ "$BOOTSTRAP_ENABLED" = "1" ]; then
-      if ! .devenv/state/venv/bin/python scripts/bootstrap_runtime_config.py --output build/runtime.generated.conf --template config/runtime.template.conf --env-output "$BOOTSTRAP_ENV_FILE" >/tmp/atlas_bootstrap_llama.log 2>&1; then
-        echo "[llama] bootstrap warning: failed to generate runtime config (continuing)" >&2
+      if ! .devenv/state/venv/bin/python scripts/bootstrap_runtime_config.py --output build/runtime.generated.conf --template config/runtime.template.conf --env-output "$BOOTSTRAP_ENV_FILE" >/tmp/atlas_bootstrap_ggml.log 2>&1; then
+        echo "[ggml] bootstrap warning: failed to generate runtime config (continuing)" >&2
       fi
       if [ -f "$BOOTSTRAP_ENV_FILE" ]; then
         # shellcheck disable=SC1090
@@ -101,18 +101,18 @@
     mkdir -p "$MODEL_DIR"
 
     if [ ! -f "$MODEL_PATH" ]; then
-      echo "[llama] Downloading embedding model to $MODEL_PATH"
+      echo "[ggml] Downloading embedding model to $MODEL_PATH"
       if ! curl -fL --retry 3 --retry-delay 2 -o "$MODEL_PATH.part" "$MODEL_URL"; then
         rm -f "$MODEL_PATH.part"
-        echo "[llama] Failed to download model from $MODEL_URL" >&2
-        echo "[llama] Set ATLAS_LLAMACPP_MODEL_URL or place a GGUF at $MODEL_PATH" >&2
-        echo "[llama] Process idle (no restart loop)." >&2
+        echo "[ggml] Failed to download model from $MODEL_URL" >&2
+        echo "[ggml] Set ATLAS_LLAMACPP_MODEL_URL or place a GGUF at $MODEL_PATH" >&2
+        echo "[ggml] Process idle (no restart loop)." >&2
         while true; do sleep 3600; done
       fi
       mv "$MODEL_PATH.part" "$MODEL_PATH"
     fi
 
-    echo "[llama] Starting llama-server on http://127.0.0.1:8080 with model $MODEL_PATH"
+    echo "[ggml] Starting llama-server on http://127.0.0.1:8080 with model $MODEL_PATH"
     llama-server \
       --model "$MODEL_PATH" \
       --alias text-embedding \

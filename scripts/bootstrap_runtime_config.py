@@ -316,7 +316,7 @@ def wait_for_models_endpoint(models_url: str, timeout_seconds: int) -> None:
         except (urllib.error.URLError, TimeoutError):
             time.sleep(1)
 
-    raise RuntimeError(f"Timed out waiting for llama endpoint: {models_url}")
+    raise RuntimeError(f"Timed out waiting for ggml endpoint: {models_url}")
 
 
 def compute_embedding_pool_stats(
