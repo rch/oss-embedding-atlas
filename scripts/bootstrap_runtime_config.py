@@ -105,6 +105,10 @@ def build_profiles() -> list[RuntimeProfile]:
                 "ATLAS_EMBED_SAMPLE_MODULO": "200",
                 "ATLAS_EMBED_MAX_CHARS": "768",
                 "ATLAS_EMBED_BATCH_SIZE": "8",
+                "ATLAS_EMBED_GROWTH_ENABLED": "1",
+                "ATLAS_EMBED_GROWTH_MODULO": "20000",
+                "ATLAS_EMBED_GROWTH_STEP": "5",
+                "ATLAS_EMBED_GROWTH_SLEEP_SECONDS": "45",
                 "ATLAS_LLAMACPP_CTX_SIZE": "4096",
                 "ATLAS_LLAMACPP_BATCH_SIZE": "256",
                 "ATLAS_LLAMACPP_STARTUP_TIMEOUT": "120",
@@ -123,6 +127,10 @@ def build_profiles() -> list[RuntimeProfile]:
                 "ATLAS_EMBED_SAMPLE_MODULO": "120",
                 "ATLAS_EMBED_MAX_CHARS": "1024",
                 "ATLAS_EMBED_BATCH_SIZE": "16",
+                "ATLAS_EMBED_GROWTH_ENABLED": "1",
+                "ATLAS_EMBED_GROWTH_MODULO": "10000",
+                "ATLAS_EMBED_GROWTH_STEP": "10",
+                "ATLAS_EMBED_GROWTH_SLEEP_SECONDS": "20",
                 "ATLAS_LLAMACPP_CTX_SIZE": "8192",
                 "ATLAS_LLAMACPP_BATCH_SIZE": "512",
                 "ATLAS_LLAMACPP_STARTUP_TIMEOUT": "120",
@@ -141,6 +149,10 @@ def build_profiles() -> list[RuntimeProfile]:
                 "ATLAS_EMBED_SAMPLE_MODULO": "30",
                 "ATLAS_EMBED_MAX_CHARS": "2048",
                 "ATLAS_EMBED_BATCH_SIZE": "64",
+                "ATLAS_EMBED_GROWTH_ENABLED": "1",
+                "ATLAS_EMBED_GROWTH_MODULO": "8000",
+                "ATLAS_EMBED_GROWTH_STEP": "40",
+                "ATLAS_EMBED_GROWTH_SLEEP_SECONDS": "10",
                 "ATLAS_LLAMACPP_CTX_SIZE": "12288",
                 "ATLAS_LLAMACPP_BATCH_SIZE": "512",
                 "ATLAS_LLAMACPP_STARTUP_TIMEOUT": "180",
@@ -159,6 +171,10 @@ def build_profiles() -> list[RuntimeProfile]:
                 "ATLAS_EMBED_SAMPLE_MODULO": "12",
                 "ATLAS_EMBED_MAX_CHARS": "3072",
                 "ATLAS_EMBED_BATCH_SIZE": "128",
+                "ATLAS_EMBED_GROWTH_ENABLED": "1",
+                "ATLAS_EMBED_GROWTH_MODULO": "6000",
+                "ATLAS_EMBED_GROWTH_STEP": "80",
+                "ATLAS_EMBED_GROWTH_SLEEP_SECONDS": "6",
                 "ATLAS_LLAMACPP_CTX_SIZE": "16384",
                 "ATLAS_LLAMACPP_BATCH_SIZE": "1024",
                 "ATLAS_LLAMACPP_STARTUP_TIMEOUT": "240",
@@ -177,6 +193,10 @@ def build_profiles() -> list[RuntimeProfile]:
                 "ATLAS_EMBED_SAMPLE_MODULO": "8",
                 "ATLAS_EMBED_MAX_CHARS": "4096",
                 "ATLAS_EMBED_BATCH_SIZE": "192",
+                "ATLAS_EMBED_GROWTH_ENABLED": "1",
+                "ATLAS_EMBED_GROWTH_MODULO": "8000",
+                "ATLAS_EMBED_GROWTH_STEP": "140",
+                "ATLAS_EMBED_GROWTH_SLEEP_SECONDS": "4",
                 "ATLAS_LLAMACPP_CTX_SIZE": "32768",
                 "ATLAS_LLAMACPP_BATCH_SIZE": "1536",
                 "ATLAS_LLAMACPP_STARTUP_TIMEOUT": "300",
@@ -299,6 +319,59 @@ def wait_for_models_endpoint(models_url: str, timeout_seconds: int) -> None:
     raise RuntimeError(f"Timed out waiting for llama endpoint: {models_url}")
 
 
+def compute_embedding_pool_stats(
+    input_dataset: Path,
+    aperture_modulo: int,
+    aperture_threshold: int,
+) -> dict:
+    import duckdb
+
+    con = duckdb.connect(database=":memory:")
+    try:
+        total_rows = int(
+            con.execute("SELECT COUNT(*) FROM read_parquet(?)", [str(input_dataset)]).fetchone()[0]
+        )
+        included_rows = int(
+            con.execute(
+                "SELECT COUNT(*) FROM read_parquet(?) WHERE hash(embedding_text) % ? < ?",
+                [str(input_dataset), aperture_modulo, aperture_threshold],
+            ).fetchone()[0]
+        )
+
+        columns = {
+            row[0]
+            for row in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(input_dataset)]).fetchall()
+        }
+
+        total_groups = None
+        included_groups = None
+        if "zip_file" in columns:
+            total_groups = int(
+                con.execute("SELECT COUNT(DISTINCT zip_file) FROM read_parquet(?)", [str(input_dataset)]).fetchone()[0]
+            )
+            included_groups = int(
+                con.execute(
+                    "SELECT COUNT(DISTINCT zip_file) FROM read_parquet(?) WHERE hash(embedding_text) % ? < ?",
+                    [str(input_dataset), aperture_modulo, aperture_threshold],
+                ).fetchone()[0]
+            )
+
+        return {
+            "totalRows": total_rows,
+            "includedRows": included_rows,
+            "remainingRows": max(0, total_rows - included_rows),
+            "totalGroups": total_groups,
+            "includedGroups": included_groups,
+            "remainingGroups": (
+                max(0, total_groups - included_groups)
+                if total_groups is not None and included_groups is not None
+                else None
+            ),
+        }
+    finally:
+        con.close()
+
+
 def generate_embeddings_dataset(
     input_dataset: Path,
     output_dataset: Path,
@@ -306,11 +379,13 @@ def generate_embeddings_dataset(
     lock_file: Path,
     api_base: str,
     model: str,
-    sample: int,
+    sample: int | None,
     sample_modulo: int,
     max_chars: int,
     embed_batch_size: int,
     startup_timeout: int,
+    aperture_threshold: int | None = None,
+    progress_prefix: str = "[bootstrap]",
 ) -> bool:
     import duckdb
     import fcntl
@@ -330,6 +405,7 @@ def generate_embeddings_dataset(
         "model": model,
         "sample": sample,
         "sampleModulo": sample_modulo,
+        "apertureThreshold": aperture_threshold,
         "maxChars": max_chars,
         "embedBatchSize": embed_batch_size,
         "version": 1,
@@ -344,7 +420,7 @@ def generate_embeddings_dataset(
             try:
                 manifest = json.loads(metadata_manifest.read_text())
                 if manifest.get("digest") == run_digest:
-                    print(f"[bootstrap] embeddings output already up-to-date: {output_dataset}")
+                    print(f"{progress_prefix} embeddings output already up-to-date: {output_dataset}")
                     return False
             except json.JSONDecodeError:
                 pass
@@ -352,14 +428,27 @@ def generate_embeddings_dataset(
         models_url = f"{api_base.rstrip('/')}/models"
         wait_for_models_endpoint(models_url=models_url, timeout_seconds=startup_timeout)
 
-        query = (
-            "SELECT * REPLACE (substring(embedding_text, 1, ?) AS embedding_text) "
-            "FROM read_parquet(?) "
-            "WHERE hash(embedding_text) % ? = 0 "
-            "LIMIT ?"
-        )
+        if aperture_threshold is None:
+            query = (
+                "SELECT * REPLACE (substring(embedding_text, 1, ?) AS embedding_text) "
+                "FROM read_parquet(?) "
+                "WHERE hash(embedding_text) % ? = 0 "
+                "LIMIT ?"
+            )
+            query_params = [max_chars, str(input_dataset), sample_modulo, sample or 0]
+        else:
+            query = (
+                "SELECT * REPLACE (substring(embedding_text, 1, ?) AS embedding_text) "
+                "FROM read_parquet(?) "
+                "WHERE hash(embedding_text) % ? < ?"
+            )
+            query_params = [max_chars, str(input_dataset), sample_modulo, aperture_threshold]
+            if sample is not None and sample > 0:
+                query += " LIMIT ?"
+                query_params.append(sample)
+
         con = duckdb.connect(database=":memory:")
-        sampled_df = con.execute(query, [max_chars, str(input_dataset), sample_modulo, sample]).fetch_df()
+        sampled_df = con.execute(query, query_params).fetch_df()
         con.close()
 
         if sampled_df.empty:
@@ -401,8 +490,134 @@ def generate_embeddings_dataset(
                 indent=2,
             )
         )
-        print(f"[bootstrap] generated embeddings dataset: {output_dataset} ({len(sampled_df)} rows)")
+        print(f"{progress_prefix} generated embeddings dataset: {output_dataset} ({len(sampled_df)} rows)")
         return True
+
+
+def run_growth_cycle(
+    input_dataset: Path,
+    output_dataset: Path,
+    metadata_manifest: Path,
+    lock_file: Path,
+    growth_state: Path,
+    api_base: str,
+    model: str,
+    aperture_modulo: int,
+    growth_step: int,
+    growth_max_threshold: int,
+    max_chars: int,
+    embed_batch_size: int,
+    startup_timeout: int,
+) -> dict:
+    prev_state: dict = {}
+    if growth_state.exists():
+        try:
+            prev_state = json.loads(growth_state.read_text())
+        except json.JSONDecodeError:
+            prev_state = {}
+
+    prev_threshold = int(prev_state.get("activeThreshold", 0))
+    target_threshold = min(growth_max_threshold, max(0, prev_threshold + growth_step))
+
+    if target_threshold <= prev_threshold:
+        stats = compute_embedding_pool_stats(input_dataset, aperture_modulo, prev_threshold)
+        print(
+            f"[embedder] coverage complete at aperture {prev_threshold}/{aperture_modulo} | "
+            f"rows {stats['includedRows']}/{stats['totalRows']} remaining={stats['remainingRows']}"
+        )
+        return {
+            "changed": False,
+            "activeThreshold": prev_threshold,
+            "stats": stats,
+            "status": "complete",
+        }
+
+    print(
+        f"[embedder] cycle planning: aperture {prev_threshold}->{target_threshold}/{aperture_modulo}",
+        flush=True,
+    )
+
+    prev_rows = int(prev_state.get("includedRows", 0))
+    prev_groups = (
+        int(prev_state.get("includedGroups", 0))
+        if prev_state.get("includedGroups") is not None
+        else None
+    )
+    target_stats = compute_embedding_pool_stats(input_dataset, aperture_modulo, target_threshold)
+
+    target_new_rows = max(0, target_stats["includedRows"] - prev_rows)
+    target_groups_suffix = ""
+    if target_stats["totalGroups"] is not None:
+        target_new_groups = max(0, (target_stats["includedGroups"] or 0) - int(prev_groups or 0))
+        target_groups_suffix = (
+            f" | groups +{target_new_groups}"
+            f" ({target_stats['includedGroups']}/{target_stats['totalGroups']} remaining={target_stats['remainingGroups']})"
+        )
+
+    print(
+        f"[embedder] cycle start: aperture {prev_threshold}->{target_threshold}/{aperture_modulo} | "
+        f"target rows +{target_new_rows}"
+        f" ({target_stats['includedRows']}/{target_stats['totalRows']} remaining={target_stats['remainingRows']})"
+        f"{target_groups_suffix}"
+    )
+
+    changed = generate_embeddings_dataset(
+        input_dataset=input_dataset,
+        output_dataset=output_dataset,
+        metadata_manifest=metadata_manifest,
+        lock_file=lock_file,
+        api_base=api_base,
+        model=model,
+        sample=None,
+        sample_modulo=aperture_modulo,
+        aperture_threshold=target_threshold,
+        max_chars=max_chars,
+        embed_batch_size=embed_batch_size,
+        startup_timeout=startup_timeout,
+        progress_prefix="[embedder]",
+    )
+
+    stats = target_stats
+    new_rows = target_new_rows
+
+    growth_state.parent.mkdir(parents=True, exist_ok=True)
+    growth_state.write_text(
+        json.dumps(
+            {
+                "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "apertureModulo": aperture_modulo,
+                "activeThreshold": target_threshold,
+                "growthStep": growth_step,
+                "includedRows": stats["includedRows"],
+                "remainingRows": stats["remainingRows"],
+                "totalRows": stats["totalRows"],
+                "includedGroups": stats["includedGroups"],
+                "remainingGroups": stats["remainingGroups"],
+                "totalGroups": stats["totalGroups"],
+            },
+            indent=2,
+        )
+    )
+
+    groups_suffix = ""
+    if stats["totalGroups"] is not None:
+        groups_suffix = (
+            f" | groups +{max(0, (stats['includedGroups'] or 0) - int(prev_state.get('includedGroups', 0) or 0))} "
+            f"({stats['includedGroups']}/{stats['totalGroups']} remaining={stats['remainingGroups']})"
+        )
+
+    print(
+        f"[embedder] aperture {target_threshold}/{aperture_modulo} | "
+        f"rows +{new_rows} ({stats['includedRows']}/{stats['totalRows']} remaining={stats['remainingRows']})"
+        f"{groups_suffix}"
+    )
+
+    return {
+        "changed": changed,
+        "activeThreshold": target_threshold,
+        "stats": stats,
+        "status": "ok",
+    }
 
 
 def main() -> None:
@@ -461,6 +676,35 @@ def main() -> None:
         default=Path("build/bootstrap_embeddings.lock"),
         help="File lock path to serialize embedding generation.",
     )
+    parser.add_argument(
+        "--grow-embeddings-once",
+        action="store_true",
+        help="Advance aperture by one growth step and regenerate embedded dataset.",
+    )
+    parser.add_argument(
+        "--growth-state",
+        type=Path,
+        default=Path("build/datasets/gittables_embedding_growth_state.json"),
+        help="State file tracking background aperture growth progress.",
+    )
+    parser.add_argument(
+        "--growth-modulo",
+        type=int,
+        default=20000,
+        help="Modulo base used by deterministic aperture growth.",
+    )
+    parser.add_argument(
+        "--growth-step",
+        type=int,
+        default=5,
+        help="How many aperture buckets to add per growth cycle.",
+    )
+    parser.add_argument(
+        "--growth-max-threshold",
+        type=int,
+        default=None,
+        help="Cap for aperture threshold. Defaults to growth-modulo.",
+    )
     args = parser.parse_args()
 
     snapshot = collect_snapshot()
@@ -516,6 +760,44 @@ def main() -> None:
             model=model,
             sample=sample,
             sample_modulo=sample_modulo,
+            max_chars=max_chars,
+            embed_batch_size=embed_batch_size,
+            startup_timeout=startup_timeout,
+        )
+
+    if args.grow_embeddings_once:
+        env = {**profile.env}
+        api_base = os.getenv("ATLAS_LLAMACPP_API_BASE", "http://localhost:8080/v1")
+        model = os.getenv(
+            "ATLAS_LLAMACPP_LITELLM_MODEL",
+            f"openai/{os.getenv('ATLAS_LLAMACPP_MODEL', 'text-embedding')}",
+        )
+        max_chars = int(os.getenv("ATLAS_EMBED_MAX_CHARS", env["ATLAS_EMBED_MAX_CHARS"]))
+        embed_batch_size = int(os.getenv("ATLAS_EMBED_BATCH_SIZE", env["ATLAS_EMBED_BATCH_SIZE"]))
+        startup_timeout = int(
+            os.getenv("ATLAS_LLAMACPP_STARTUP_TIMEOUT", env["ATLAS_LLAMACPP_STARTUP_TIMEOUT"])
+        )
+
+        growth_modulo = int(os.getenv("ATLAS_EMBED_GROWTH_MODULO", str(args.growth_modulo)))
+        growth_step = int(os.getenv("ATLAS_EMBED_GROWTH_STEP", str(args.growth_step)))
+        growth_max_threshold = int(
+            os.getenv(
+                "ATLAS_EMBED_GROWTH_MAX_THRESHOLD",
+                str(args.growth_max_threshold if args.growth_max_threshold is not None else growth_modulo),
+            )
+        )
+
+        run_growth_cycle(
+            input_dataset=args.input_dataset,
+            output_dataset=args.embedded_output,
+            metadata_manifest=args.embedded_manifest,
+            lock_file=args.lock_file,
+            growth_state=args.growth_state,
+            api_base=api_base,
+            model=model,
+            aperture_modulo=growth_modulo,
+            growth_step=growth_step,
+            growth_max_threshold=growth_max_threshold,
             max_chars=max_chars,
             embed_batch_size=embed_batch_size,
             startup_timeout=startup_timeout,

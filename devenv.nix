@@ -168,6 +168,65 @@
       --mcp
   '';
 
+  processes.embedder.exec = ''
+    set -euo pipefail
+
+    # Ensure growth worker has backend embedding dependencies available.
+    uv pip install --python .devenv/state/venv/bin/python -e ./packages/backend
+
+    BOOTSTRAP_ENABLED=''${ATLAS_BOOTSTRAP_ENABLED:-1}
+    BOOTSTRAP_ENV_FILE=''${ATLAS_BOOTSTRAP_ENV_FILE:-build/runtime.generated.env}
+    INPUT_DATASET=''${ATLAS_DATASET:-build/datasets/gittables_metadata.parquet}
+    EMBEDDED_DATASET=''${ATLAS_EMBEDDED_DATASET:-build/datasets/gittables_metadata_embedded.parquet}
+    EMBEDDED_MANIFEST=''${ATLAS_EMBEDDED_MANIFEST:-build/datasets/gittables_metadata_embedded.manifest.json}
+    EMBED_GROWTH_STATE=''${ATLAS_EMBED_GROWTH_STATE:-build/datasets/gittables_embedding_growth_state.json}
+    EMBED_GROWTH_ENABLED=''${ATLAS_EMBED_GROWTH_ENABLED:-1}
+    EMBED_GROWTH_SLEEP_SECONDS=''${ATLAS_EMBED_GROWTH_SLEEP_SECONDS:-45}
+
+    if [ "$BOOTSTRAP_ENABLED" = "1" ]; then
+      .devenv/state/venv/bin/python -u scripts/bootstrap_runtime_config.py \
+        --output build/runtime.generated.conf \
+        --template config/runtime.template.conf \
+        --env-output "$BOOTSTRAP_ENV_FILE"
+
+      if [ -f "$BOOTSTRAP_ENV_FILE" ]; then
+        # shellcheck disable=SC1090
+        . "$BOOTSTRAP_ENV_FILE"
+      fi
+
+      EMBEDDED_DATASET=''${ATLAS_EMBEDDED_DATASET:-$EMBEDDED_DATASET}
+      EMBED_GROWTH_ENABLED=''${ATLAS_EMBED_GROWTH_ENABLED:-$EMBED_GROWTH_ENABLED}
+      EMBED_GROWTH_SLEEP_SECONDS=''${ATLAS_EMBED_GROWTH_SLEEP_SECONDS:-$EMBED_GROWTH_SLEEP_SECONDS}
+    fi
+
+    if [ "$EMBED_GROWTH_ENABLED" != "1" ]; then
+      echo "[embedder] background growth disabled (ATLAS_EMBED_GROWTH_ENABLED=$EMBED_GROWTH_ENABLED); idling"
+      while true; do sleep 3600; done
+    fi
+
+    if [ ! -f "$INPUT_DATASET" ]; then
+      echo "[embedder] input dataset not found at $INPUT_DATASET; idling" >&2
+      while true; do sleep 3600; done
+    fi
+
+    echo "[embedder] starting continuous growth loop (sleep=$EMBED_GROWTH_SLEEP_SECONDS s)"
+    while true; do
+      if ! .devenv/state/venv/bin/python -u scripts/bootstrap_runtime_config.py \
+        --output build/runtime.generated.conf \
+        --template config/runtime.template.conf \
+        --env-output "$BOOTSTRAP_ENV_FILE" \
+        --grow-embeddings-once \
+        --input-dataset "$INPUT_DATASET" \
+        --embedded-output "$EMBEDDED_DATASET" \
+        --embedded-manifest "$EMBEDDED_MANIFEST" \
+        --growth-state "$EMBED_GROWTH_STATE"; then
+        echo "[embedder] growth cycle failed; retrying in $EMBED_GROWTH_SLEEP_SECONDS s" >&2
+      fi
+
+      sleep "$EMBED_GROWTH_SLEEP_SECONDS"
+    done
+  '';
+
   # https://devenv.sh/services/
   # services.postgres.enable = true;
 
