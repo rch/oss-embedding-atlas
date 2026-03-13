@@ -120,7 +120,7 @@
       --host 127.0.0.1 \
       --port 8080 \
       --ctx-size ''${ATLAS_LLAMACPP_CTX_SIZE:-4096} \
-      --batch-size ''${ATLAS_LLAMACPP_BATCH_SIZE:-128}
+        --batch-size ''${ATLAS_LLAMACPP_BATCH_SIZE:-320}
   '';
 
   processes.backend.exec = ''

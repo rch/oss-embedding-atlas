@@ -58,11 +58,15 @@ Primary runtime paths (default):
 When `devenv up` starts:
 
 1. `viewer`/`backend` run bootstrap (`scripts/bootstrap_runtime_config.py`) in seed mode (`--generate-embeddings`) to ensure a valid embedded dataset exists.
-2. The seed step is idempotent:
+2. Bootstrap derives tuning knobs from first principles using detected hardware (`cpu_logical_cores`, `ram_gb`, `gpu_count`, and GPU memory):
+  - throughput proxy drives sample size/modulo and growth pace,
+  - memory proxy drives `ATLAS_LLAMACPP_BATCH_SIZE`, `ATLAS_LLAMACPP_CTX_SIZE`, and `ATLAS_EMBED_MAX_CHARS`,
+  - profile-specific bounds keep values in safe operating ranges.
+3. The seed step is idempotent:
    - input/source fingerprint + config digest is checked,
    - unchanged runs skip regeneration.
-3. `backend` serves the embedded parquet using `projection_x` / `projection_y` directly.
-4. `viewer` starts and loads quickly from the seed dataset.
+4. `backend` serves the embedded parquet using `projection_x` / `projection_y` directly.
+5. `viewer` starts and loads quickly from the seed dataset.
 
 ## Continuous Growth Flow
 
@@ -116,6 +120,7 @@ Typical `embedder` lines:
 
 - `cycle planning: aperture A->B/M`
 - `cycle start: ... target rows +N (... remaining=R) | groups +G (... remaining=RG)`
+- `retry batch at row I: batch_size X->Y, max_chars C->D`
 - `generated embeddings dataset: ... (X rows)`
 - `aperture B/M | rows +N (... remaining=R) | groups +G (... remaining=RG)`
 - `coverage complete at aperture ...`
@@ -142,6 +147,8 @@ These provide:
 - `ATLAS_EMBED_SAMPLE_MODULO`
 - `ATLAS_EMBED_MAX_CHARS`
 - `ATLAS_EMBED_BATCH_SIZE`
+- `ATLAS_EMBED_RETRY_MIN_CHARS` (default `128`)
+- `ATLAS_EMBED_RETRY_MAX_ATTEMPTS` (default `8`)
 
 ### Background Growth
 
@@ -198,6 +205,13 @@ curl -sS -D - http://127.0.0.1:5173/ -o /dev/null
 
 ## Tuning Guidance
 
+- Use the bootstrap script on each target machine to discover baseline knobs from hardware:
+
+```bash
+.devenv/state/venv/bin/python scripts/bootstrap_runtime_config.py --print-json
+```
+
+- Treat generated values as machine-specific defaults, then override selectively for experiments.
 - Keep seed small (`ATLAS_EMBED_SAMPLE`) for startup speed.
 - Increase growth pace by raising:
   - `ATLAS_EMBED_GROWTH_STEP`

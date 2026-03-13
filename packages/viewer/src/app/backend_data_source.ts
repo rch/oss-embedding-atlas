@@ -39,6 +39,10 @@ interface Metadata {
   };
 }
 
+const METADATA_FETCH_MAX_ATTEMPTS = 8;
+const METADATA_FETCH_INITIAL_DELAY_MS = 500;
+const METADATA_FETCH_MAX_DELAY_MS = 5000;
+
 export class BackendDataSource implements DataSource {
   private serverUrl: string;
   downloadArchive: (() => Promise<void>) | undefined = undefined;
@@ -107,18 +111,43 @@ export class BackendDataSource implements DataSource {
 
   private async fetchEndpoint(endpoint: string, init?: RequestInit) {
     let resp = await fetch(joinUrl(this.serverUrl, endpoint), init);
-    if (resp.status != 200) {
-      throw new Error("ERROR FETCH");
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status} while fetching ${endpoint}`);
     }
     return resp;
   }
 
+  private async wait(ms: number) {
+    return await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private async metadata(): Promise<Metadata> {
-    try {
-      return await this.fetchEndpoint("metadata.json").then((x) => x.json());
-    } catch (e) {
-      throw new Error("Network Error: Failed to fetch dataset metadata");
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= METADATA_FETCH_MAX_ATTEMPTS; attempt++) {
+      try {
+        return await this.fetchEndpoint("metadata.json").then((x) => x.json());
+      } catch (e) {
+        lastError = e;
+
+        if (attempt === METADATA_FETCH_MAX_ATTEMPTS) {
+          break;
+        }
+
+        let delayMs = Math.min(
+          METADATA_FETCH_INITIAL_DELAY_MS * 2 ** (attempt - 1),
+          METADATA_FETCH_MAX_DELAY_MS,
+        );
+        console.warn(
+          `[viewer] metadata fetch failed (attempt ${attempt}/${METADATA_FETCH_MAX_ATTEMPTS}), retrying in ${delayMs}ms`,
+          e,
+        );
+        await this.wait(delayMs);
+      }
     }
+
+    console.error("[viewer] metadata fetch failed after retries", lastError);
+    throw new Error("Network Error: Failed to fetch dataset metadata");
   }
 
   async cacheGet(key: string) {
