@@ -42,38 +42,16 @@
   processes.viewer.exec = ''
     set -euo pipefail
 
-    # Ensure bootstrap has litellm/duckdb/umap dependencies available.
-    uv pip install --python .devenv/state/venv/bin/python -e ./packages/backend
-
-    BOOTSTRAP_ENABLED=''${ATLAS_BOOTSTRAP_ENABLED:-1}
-    BOOTSTRAP_ENV_FILE=''${ATLAS_BOOTSTRAP_ENV_FILE:-build/runtime.generated.env}
-    EMBEDDED_DATASET=''${ATLAS_EMBEDDED_DATASET:-build/datasets/gittables_metadata_embedded.parquet}
-
-    if [ "$BOOTSTRAP_ENABLED" = "1" ]; then
-      .devenv/state/venv/bin/python scripts/bootstrap_runtime_config.py \
-        --output build/runtime.generated.conf \
-        --template config/runtime.template.conf \
-        --env-output "$BOOTSTRAP_ENV_FILE" \
-        --generate-embeddings \
-        --input-dataset ''${ATLAS_DATASET:-build/datasets/gittables_metadata.parquet} \
-        --embedded-output "$EMBEDDED_DATASET"
-
-      if [ -f "$BOOTSTRAP_ENV_FILE" ]; then
-        # shellcheck disable=SC1090
-        . "$BOOTSTRAP_ENV_FILE"
-      fi
-
-      EMBEDDED_DATASET=''${ATLAS_EMBEDDED_DATASET:-$EMBEDDED_DATASET}
+    # Keep viewer startup fast; backend/embedder own runtime bootstrap and dataset generation.
+    if [ ! -f packages/utils/dist/index.js ] || find packages/utils/src -type f -newer packages/utils/dist/index.js | grep -q .; then
+      echo "[viewer] building @embedding-atlas/utils"
+      npm run build -w @embedding-atlas/utils
     fi
 
-    if [ ! -f "$EMBEDDED_DATASET" ]; then
-      echo "[viewer] embedded dataset missing after bootstrap: $EMBEDDED_DATASET" >&2
-      exit 1
+    if [ ! -f packages/component/dist/index.js ] || find packages/component/src -type f -newer packages/component/dist/index.js | grep -q .; then
+      echo "[viewer] building @embedding-atlas/component"
+      npm run build -w @embedding-atlas/component
     fi
-
-    # Build workspace packages required by @embedding-atlas/viewer imports.
-    npm run package -w @embedding-atlas/utils
-    npm run package -w @embedding-atlas/component
 
     npm run dev -w @embedding-atlas/viewer -- --host 127.0.0.1 --port 5173
   '';
