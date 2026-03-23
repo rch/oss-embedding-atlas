@@ -188,7 +188,10 @@ PY
 )
 
         echo "[release] building backend wheel for version $VERSION"
-        ./packages/backend/build.sh
+        (
+          cd packages/backend
+          ./build.sh
+        )
 
         DIST_DIR="packages/backend/dist"
         WHEEL_GLOB="$DIST_DIR/embedding_atlas-$VERSION-*.whl"
@@ -232,7 +235,10 @@ PY
 
         if ! ls $WHEEL_GLOB >/dev/null 2>&1; then
           echo "[release] missing wheel for $VERSION; building now"
-          devenv tasks run workflow:build-release-assets
+          (
+            cd packages/backend
+            ./build.sh
+          )
         fi
 
         if [ ! -f "$DIST_DIR/checksums.txt" ]; then
