@@ -4,6 +4,7 @@
   # https://devenv.sh/packages/
   packages = [
     pkgs.git
+    pkgs.gh
     pkgs.llama-cpp
     pkgs.curl
   ];
