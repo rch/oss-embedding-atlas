@@ -173,6 +173,106 @@
     done
   '';
 
+  scripts = {
+    "workflow:build-release-assets" = {
+      exec = ''
+        set -euo pipefail
+
+        VERSION=$(python - <<'PY'
+from pathlib import Path
+import tomllib
+
+data = tomllib.loads(Path("packages/backend/pyproject.toml").read_text())
+print(data["project"]["version"])
+PY
+)
+
+        echo "[release] building backend wheel for version $VERSION"
+        ./packages/backend/build.sh
+
+        DIST_DIR="packages/backend/dist"
+        WHEEL_GLOB="$DIST_DIR/embedding_atlas-$VERSION-*.whl"
+
+        if ! ls $WHEEL_GLOB >/dev/null 2>&1; then
+          echo "Error: expected wheel matching $WHEEL_GLOB" >&2
+          exit 1
+        fi
+
+        shasum -a 256 $WHEEL_GLOB > "$DIST_DIR/checksums.txt"
+
+        echo "[release] built artifacts:"
+        ls -1 $WHEEL_GLOB "$DIST_DIR/checksums.txt"
+      '';
+    };
+
+    "workflow:create-release" = {
+      exec = ''
+        set -euo pipefail
+
+        EMBEDDING_ATLAS_RELEASE_REPO=''${EMBEDDING_ATLAS_RELEASE_REPO:-}
+        EMBEDDING_ATLAS_RELEASE_TAG=''${EMBEDDING_ATLAS_RELEASE_TAG:-}
+
+        if [ -z "$EMBEDDING_ATLAS_RELEASE_REPO" ]; then
+          echo "Error: EMBEDDING_ATLAS_RELEASE_REPO is required. Example: rch/oss-embedding-atlas" >&2
+          exit 1
+        fi
+
+        VERSION=$(python - <<'PY'
+from pathlib import Path
+import tomllib
+
+data = tomllib.loads(Path("packages/backend/pyproject.toml").read_text())
+print(data["project"]["version"])
+PY
+)
+
+        TAG=''${EMBEDDING_ATLAS_RELEASE_TAG:-v$VERSION}
+        DIST_DIR="packages/backend/dist"
+        WHEEL_GLOB="$DIST_DIR/embedding_atlas-$VERSION-*.whl"
+
+        if ! ls $WHEEL_GLOB >/dev/null 2>&1; then
+          echo "[release] missing wheel for $VERSION; building now"
+          devenv tasks run workflow:build-release-assets
+        fi
+
+        if [ ! -f "$DIST_DIR/checksums.txt" ]; then
+          shasum -a 256 $WHEEL_GLOB > "$DIST_DIR/checksums.txt"
+        fi
+
+        # Keep release tag aligned with package version.
+        if [ "$TAG" != "v$VERSION" ]; then
+          echo "Error: release tag $TAG must match backend version v$VERSION" >&2
+          exit 1
+        fi
+
+        git fetch --tags --quiet
+
+        if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+          git tag -a "$TAG" -m "$TAG"
+        fi
+
+        if ! git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+          git push origin "$TAG"
+        fi
+
+        if gh release view "$TAG" --repo "$EMBEDDING_ATLAS_RELEASE_REPO" >/dev/null 2>&1; then
+          gh release upload "$TAG" $WHEEL_GLOB "$DIST_DIR/checksums.txt" \
+            --repo "$EMBEDDING_ATLAS_RELEASE_REPO" \
+            --clobber
+        else
+          gh release create "$TAG" \
+            --repo "$EMBEDDING_ATLAS_RELEASE_REPO" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag \
+            $WHEEL_GLOB "$DIST_DIR/checksums.txt"
+        fi
+
+        gh release view "$TAG" --repo "$EMBEDDING_ATLAS_RELEASE_REPO" --json tagName,assets,url
+      '';
+    };
+  };
+
   # https://devenv.sh/services/
   # services.postgres.enable = true;
 
