@@ -58,6 +58,10 @@ class EmbeddingAtlasWidget(anywidget.AnyWidget):
             text:
                 The column name for the textual data.
 
+            cluster_label_text:
+                The column name to use for automatic cluster labels in the embedding view.
+                If provided, this overrides ``text`` for cluster auto-labeling.
+
             neighbors:
                 The column name containing precomputed K-nearest neighbors for each point.
                 Each value in the column should be a dictionary with the format:

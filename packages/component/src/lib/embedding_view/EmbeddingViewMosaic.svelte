@@ -15,12 +15,6 @@
     queryApproximateDensity,
   } from "./mosaic_client.js";
   import type { DataPoint, DataPointID } from "./types.js";
-  import {
-    textSummarizerAdd,
-    textSummarizerCreate,
-    textSummarizerDestroy,
-    textSummarizerSummarize,
-  } from "./worker/index.js";
 
   let {
     coordinator = defaultCoordinator(),
@@ -330,56 +324,55 @@
     return await pointQuery.queryPoints(identifiers);
   }
 
+  function clusterPredicate(rects: Rectangle[]): SQL.ExprNode {
+    return SQL.or(
+      ...rects.map((r) =>
+        SQL.and(
+          SQL.isBetween(SQL.column(x), [r.xMin, r.xMax]),
+          SQL.isBetween(SQL.column(y), [r.yMin, r.yMax]),
+        ),
+      ),
+    );
+  }
+
   // Cluster Labels
   async function queryClusterLabels(clusters: Rectangle[][]): Promise<(string | null)[]> {
     if (text == null) {
       return clusters.map(() => null);
     }
-    // Create text summarizer (in the worker)
-    let summarizer = await textSummarizerCreate({
-      regions: clusters,
-      stopWords: config?.autoLabelStopWords ?? null,
-    });
-    // Add text data to the summarizer
-    let start = 0;
-    let chunkSize = 10000;
-    let lastAdd: Promise<unknown> | null = null;
-    while (true) {
-      let r = await coordinator.query(
-        SQL.Query.from(table)
-          .select({ x: SQL.column(x), y: SQL.column(y), text: SQL.column(text) })
-          .offset(start)
-          .limit(chunkSize),
-      );
-      let data = {
-        x: r.getChild("x").toArray(),
-        y: r.getChild("y").toArray(),
-        text: r.getChild("text").toArray(),
-      };
-      if (lastAdd != null) {
-        await lastAdd;
-      }
-      lastAdd = textSummarizerAdd(summarizer, data);
-      if (r.getChild("text").length < chunkSize) {
-        break;
-      }
-      start += chunkSize;
-    }
-    if (lastAdd != null) {
-      await lastAdd;
-    }
-    let summarizeResult = await textSummarizerSummarize(summarizer);
-    await textSummarizerDestroy(summarizer);
 
-    return summarizeResult.map((words) => {
-      if (words.length == 0) {
-        return null;
-      } else if (words.length > 2) {
-        return words.slice(0, 2).join("-") + "-\n" + words.slice(2).join("-");
-      } else {
-        return words.join("-");
-      }
-    });
+    let topLabels = await Promise.all(
+      clusters.map(async (rects) => {
+        if (rects.length == 0) {
+          return null;
+        }
+
+        let q = SQL.Query.from(table)
+          .select({ label: SQL.column(text), count: SQL.count() })
+          .where(
+            SQL.and(
+              clusterPredicate(rects),
+              SQL.not(SQL.isNull(SQL.column(text))),
+              SQL.neq(SQL.cast(SQL.column(text), "VARCHAR"), SQL.literal("")),
+            ),
+          )
+          .groupby("label")
+          .orderby(SQL.desc(SQL.count()))
+          .limit(1);
+
+        let r = await coordinator.query(q);
+        if (r.numRows == 0) {
+          return null;
+        }
+        let value = r.get(0)?.label;
+        if (value == null) {
+          return null;
+        }
+        return `${value}`;
+      }),
+    );
+
+    return topLabels;
   }
 </script>
 

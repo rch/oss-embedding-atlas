@@ -619,7 +619,7 @@
 
     let cacheKey = await cacheKeyForObject({
       autoLabel: {
-        version: 1,
+        version: 2,
         viewport,
         stopWords: config?.autoLabelStopWords,
         densityThreshold: config?.autoLabelDensityThreshold,

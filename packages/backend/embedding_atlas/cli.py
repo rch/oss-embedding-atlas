@@ -3,6 +3,7 @@
 """Command line interface."""
 
 import importlib
+import hashlib
 import json
 import logging
 import pathlib
@@ -114,6 +115,54 @@ def load_datasets(
     return df
 
 
+def _short_file_hash(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Return a short content hash for a local file."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
+
+def _cache_fingerprint(inputs: list[str], cluster_label_text: str | None) -> dict:
+    """Build a stable cache fingerprint from local input contents and labeling config."""
+    input_fingerprints: list[dict] = []
+
+    for value in inputs:
+        p = Path(value).expanduser()
+        if p.exists() and p.is_file():
+            try:
+                input_fingerprints.append(
+                    {
+                        "input": value,
+                        "kind": "file",
+                        "contentHash": _short_file_hash(p),
+                    }
+                )
+            except OSError:
+                input_fingerprints.append(
+                    {
+                        "input": value,
+                        "kind": "file-unreadable",
+                    }
+                )
+        else:
+            input_fingerprints.append(
+                {
+                    "input": value,
+                    "kind": "reference",
+                }
+            )
+
+    return {
+        "inputs": input_fingerprints,
+        "clusterLabelText": cluster_label_text,
+    }
+
+
 def prompt_for_column(df: pd.DataFrame, message: str) -> str | None:
     question = [
         inquirer.List(
@@ -149,6 +198,12 @@ def import_modules(names: list[str]):
 @click.command()
 @click.argument("inputs", nargs=-1, required=True)
 @click.option("--text", default=None, help="Column containing text data.")
+@click.option(
+    "--cluster-label-text",
+    "cluster_label_text",
+    default=None,
+    help="Column to use for automatic embedding cluster labels (defaults to --text).",
+)
 @click.option("--image", default=None, help="Column containing image data.")
 @click.option(
     "--vector", default=None, help="Column containing pre-computed vector embeddings."
@@ -336,6 +391,7 @@ def import_modules(names: list[str]):
 def main(
     inputs,
     text: str | None,
+    cluster_label_text: str | None,
     image: str | None,
     vector: str | None,
     split: list[str] | None,
@@ -479,6 +535,7 @@ def main(
         y=y_column,
         neighbors=neighbors_column,
         text=text,
+        cluster_label_text=cluster_label_text,
         point_size=point_size,
         stop_words=stop_words_resolved,
         labels=labels_resolved,
@@ -491,6 +548,7 @@ def main(
     hasher = Hasher()
     hasher.update(__version__)
     hasher.update(inputs)
+    hasher.update(_cache_fingerprint(list(inputs), cluster_label_text))
     hasher.update(metadata)
     identifier = hasher.hexdigest()
 
