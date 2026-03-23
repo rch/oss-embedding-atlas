@@ -107,43 +107,10 @@
     # Ensure editable backend CLI and dependencies are installed in devenv venv.
     uv pip install --python .devenv/state/venv/bin/python -e ./packages/backend
 
-    BOOTSTRAP_ENABLED=''${ATLAS_BOOTSTRAP_ENABLED:-1}
-    BOOTSTRAP_ENV_FILE=''${ATLAS_BOOTSTRAP_ENV_FILE:-build/runtime.generated.env}
-    EMBEDDED_DATASET=''${ATLAS_EMBEDDED_DATASET:-build/datasets/gittables_metadata_embedded.parquet}
-    if [ "$BOOTSTRAP_ENABLED" = "1" ]; then
-      .devenv/state/venv/bin/python scripts/bootstrap_runtime_config.py \
-        --output build/runtime.generated.conf \
-        --template config/runtime.template.conf \
-        --env-output "$BOOTSTRAP_ENV_FILE" \
-        --generate-embeddings \
-        --input-dataset ''${ATLAS_DATASET:-build/datasets/gittables_metadata.parquet} \
-        --embedded-output "$EMBEDDED_DATASET"
+    # Ensure engine dependencies
+    uv pip install --python .devenv/state/venv/bin/python httpx websockets uvicorn fastapi starlette
 
-      if [ -f "$BOOTSTRAP_ENV_FILE" ]; then
-        # shellcheck disable=SC1090
-        . "$BOOTSTRAP_ENV_FILE"
-      fi
-
-      EMBEDDED_DATASET=''${ATLAS_EMBEDDED_DATASET:-$EMBEDDED_DATASET}
-    fi
-
-    DATASET="$EMBEDDED_DATASET"
-    if [ ! -f "$DATASET" ]; then
-      echo "[backend] embedded dataset missing after bootstrap: $DATASET" >&2
-      exit 1
-    fi
-
-    echo "[backend] serving precomputed real-embeddings dataset: $DATASET"
-    .devenv/state/venv/bin/embedding-atlas \
-      "$DATASET" \
-      --text embedding_text \
-      --x projection_x \
-      --y projection_y \
-      --host localhost \
-      --port 5055 \
-      --no-auto-port \
-      --cors http://127.0.0.1:5173,http://localhost:5173 \
-      --mcp
+    PORT=5055 .devenv/state/venv/bin/python scripts/engine.py
   '';
 
   processes.embedder.exec = ''

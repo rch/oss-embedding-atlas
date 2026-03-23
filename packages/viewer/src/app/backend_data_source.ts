@@ -39,7 +39,7 @@ interface Metadata {
   };
 }
 
-const METADATA_FETCH_MAX_ATTEMPTS = 8;
+const METADATA_FETCH_MAX_ATTEMPTS = 30;
 const METADATA_FETCH_INITIAL_DELAY_MS = 500;
 const METADATA_FETCH_MAX_DELAY_MS = 5000;
 
@@ -63,7 +63,7 @@ export class BackendDataSource implements DataSource {
     table: string,
     onStatus: (message: string) => void,
   ): Promise<Partial<EmbeddingAtlasProps>> {
-    let metadata = await this.metadata();
+    let metadata = await this.metadata(onStatus);
 
     onStatus("Initializing database...");
     let dbType = metadata.database?.type ?? "wasm";
@@ -121,12 +121,49 @@ export class BackendDataSource implements DataSource {
     return await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  private async metadata(): Promise<Metadata> {
+  private async metadata(onStatus?: (message: string) => void): Promise<Metadata> {
     let lastError: unknown = null;
+    let sseDone = false;
 
     for (let attempt = 1; attempt <= METADATA_FETCH_MAX_ATTEMPTS; attempt++) {
       try {
-        return await this.fetchEndpoint("metadata.json").then((x) => x.json());
+        if (!sseDone && onStatus) {
+           try {
+             let statusResp = await fetch(joinUrl(this.serverUrl, "status"));
+             if (statusResp.ok && statusResp.body) {
+                const reader = statusResp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                while (true) {
+                  const { value, done } = await reader.read();
+                  if (done) break;
+                  buffer += decoder.decode(value, { stream: true });
+                  const lines = buffer.split("\n");
+                  buffer = lines.pop() || "";
+                  for (let line of lines) {
+                    if (line.startsWith("data: ")) {
+                      try {
+                        let data = JSON.parse(line.slice(6));
+                        if (data.type === "ready") {
+                           sseDone = true;
+                           break;
+                        }
+                        if (data.message) {
+                           onStatus(data.message);
+                        }
+                      } catch (e) {} // ignore invalid JSON
+                    }
+                  }
+                  if (sseDone) break;
+                }
+             }
+           } catch (e) {
+             // Ignore status endpoint errors (connection refused, not up yet)
+           }
+        }
+
+        let resp = await this.fetchEndpoint("metadata.json");
+        return await resp.json();
       } catch (e) {
         lastError = e;
 

@@ -30,7 +30,7 @@
   onMount(async () => {
     try {
       initialState = await getQueryPayload("state");
-      status = "Initializing database...";
+      status = "Connecting to backend orchestration layer...";
       config = await dataSource.initializeCoordinator(coordinator, "dataset", (s) => {
         status = s;
       });
