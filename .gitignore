@@ -7,6 +7,13 @@ build/
 thirdparty/
 dist/
 distlib/
+
+# Pre-built artifacts for embedding-atlas package (CAI deployment).
+# The full workspace build chain requires uv, Emscripten, Rust/wasm-bindgen
+# which aren't available on bare CAI runtimes. These committed artifacts
+# allow consumers to use the package without rebuilding from source.
+!packages/embedding-atlas/dist/
+!packages/embedding-atlas/svelte/
 target/
 *.tsbuildinfo
 .svelte-kit/
